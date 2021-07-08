@@ -74,10 +74,8 @@ func main() {
 			}),
 		})
 
-		auth := basicauth.New(basicauth.Config{
-			Users: map[string]string{
-				"myusername": "mypassword",
-			},
+		auth := basicauth.Default(map[string]string{
+			"myusername": "mypassword",
 		})
 
 		filesRouter.Delete("/{file:path}", auth, deleteFile)
@@ -102,7 +100,7 @@ func uploadView(ctx iris.Context) {
 func upload(ctx iris.Context) {
 	ctx.SetMaxRequestBodySize(maxSize)
 
-	_, err := ctx.UploadFormFiles(uploadDir, beforeSave)
+	_, _, err := ctx.UploadFormFiles(uploadDir, beforeSave)
 	if err != nil {
 		ctx.StopWithError(iris.StatusPayloadTooRage, err)
 		return
@@ -111,12 +109,13 @@ func upload(ctx iris.Context) {
 	ctx.Redirect("/files")
 }
 
-func beforeSave(ctx iris.Context, file *multipart.FileHeader) {
+func beforeSave(ctx iris.Context, file *multipart.FileHeader) bool {
 	ip := ctx.RemoteAddr()
 	ip = strings.ReplaceAll(ip, ".", "_")
 	ip = strings.ReplaceAll(ip, ":", "_")
 
 	file.Filename = ip + "-" + file.Filename
+	return true
 }
 
 func deleteFile(ctx iris.Context) {

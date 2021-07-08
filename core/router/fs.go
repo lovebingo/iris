@@ -13,8 +13,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,9 +67,9 @@ type DirCacheOptions struct {
 // See `DefaultDirOptions`.
 type DirOptions struct {
 	// Defaults to "/index.html", if request path is ending with **/*/$IndexName
-	// then it redirects to **/*(/) which another handler is handling it,
-	// that another handler, called index handler, is auto-registered by the framework
-	// if end developer does not managed to handle it by hand.
+	// then it redirects to **/*(/).
+	// That index handler is registered automatically
+	// by the framework unless but it can be overridden.
 	IndexName string
 	// PushTargets filenames (map's value) to
 	// be served without additional client's requests (HTTP/2 Push)
@@ -94,18 +97,33 @@ type DirOptions struct {
 	// When files should served under compression.
 	Compress bool
 
-	// List the files inside the current requested directory if `IndexName` not found.
+	// List the files inside the current requested
+	// directory if `IndexName` not found.
 	ShowList bool
 	// If `ShowList` is true then this function will be used instead
-	// of the default one to show the list of files of a current requested directory(dir).
+	// of the default one to show the list of files
+	// of a current requested directory(dir).
 	// See `DirListRich` package-level function too.
 	DirList DirListFunc
+
+	// Show hidden files or directories or not when `ShowList` is true.
+	ShowHidden bool
 
 	// Files downloaded and saved locally.
 	Attachments Attachments
 
 	// Optional validator that loops through each requested resource.
 	AssetValidator func(ctx *context.Context, name string) bool
+	// If enabled then the router will render the index file on any not-found file
+	// instead of firing the 404 error code handler.
+	// Make sure the `IndexName` field is set.
+	//
+	// Usage:
+	//  app.HandleDir("/", iris.Dir("./public"), iris.DirOptions{
+	// 	 IndexName: "index.html",
+	// 	 SPA:       true,
+	//  })
+	SPA bool
 }
 
 // DefaultDirOptions holds the default settings for `FileServer`.
@@ -135,6 +153,7 @@ var DefaultDirOptions = DirOptions{
 		Burst:  0,
 	},
 	AssetValidator: nil,
+	SPA:            false,
 }
 
 // FileServer returns a Handler which serves files from a specific file system.
@@ -187,11 +206,32 @@ func FileServer(fs http.FileSystem, options DirOptions) context.Handler {
 		name := prefix(r.URL.Path, "/")
 		r.URL.Path = name
 
+		var (
+			indexFound bool
+			noRedirect bool
+		)
+
 		f, err := open(name, r)
 		if err != nil {
-			plainStatusCode(ctx, http.StatusNotFound)
-			return
+			if options.SPA && name != options.IndexName {
+				oldname := name
+				name = prefix(options.IndexName, "/") // to match push targets.
+				r.URL.Path = name
+				f, err = open(name, r) // try find the main index.
+				if err != nil {
+					r.URL.Path = oldname
+					plainStatusCode(ctx, http.StatusNotFound)
+					return
+				}
+
+				indexFound = true // to support push targets.
+				noRedirect = true // to disable redirecting back to /.
+			} else {
+				plainStatusCode(ctx, http.StatusNotFound)
+				return
+			}
 		}
+
 		defer f.Close()
 
 		info, err := f.Stat()
@@ -199,8 +239,6 @@ func FileServer(fs http.FileSystem, options DirOptions) context.Handler {
 			plainStatusCode(ctx, http.StatusNotFound)
 			return
 		}
-
-		var indexFound bool
 
 		// use contents of index.html for directory, if present
 		if info.IsDir() && options.IndexName != "" {
@@ -252,7 +290,7 @@ func FileServer(fs http.FileSystem, options DirOptions) context.Handler {
 
 		// index requested, send a moved permanently status
 		// and navigate back to the route without the index suffix.
-		if strings.HasSuffix(name, options.IndexName) {
+		if !noRedirect && options.IndexName != "" && strings.HasSuffix(name, options.IndexName) {
 			localRedirect(ctx, "./")
 			return
 		}
@@ -395,8 +433,12 @@ func StripPrefix(prefix string, h context.Handler) context.Handler {
 	canonicalPrefix = toWebPath(canonicalPrefix)
 
 	return func(ctx *context.Context) {
-		if p := strings.TrimPrefix(ctx.Request().URL.Path, canonicalPrefix); len(p) < len(ctx.Request().URL.Path) {
-			ctx.Request().URL.Path = p
+		u := ctx.Request().URL
+		if p := strings.TrimPrefix(u.Path, canonicalPrefix); len(p) < len(u.Path) {
+			if p == "" {
+				p = "/"
+			}
+			u.Path = p
 			h(ctx)
 		} else {
 			ctx.NotFound()
@@ -406,9 +448,9 @@ func StripPrefix(prefix string, h context.Handler) context.Handler {
 
 func toWebPath(systemPath string) string {
 	// winos slash to slash
-	webpath := strings.Replace(systemPath, "\\", "/", -1)
+	webpath := strings.ReplaceAll(systemPath, "\\", "/")
 	// double slashes to single
-	webpath = strings.Replace(webpath, "//", "/", -1)
+	webpath = strings.ReplaceAll(webpath, "//", "/")
 	return webpath
 }
 
@@ -490,6 +532,22 @@ func toBaseName(s string) string {
 	return s
 }
 
+// IsHidden checks a file is hidden or not
+func IsHidden(file os.FileInfo) bool {
+	isHidden := false
+	if runtime.GOOS == "windows" {
+		fa := reflect.ValueOf(file.Sys()).Elem().FieldByName("FileAttributes").Uint()
+		bytefa := []byte(strconv.FormatUint(fa, 2))
+		if bytefa[len(bytefa)-2] == '1' {
+			isHidden = true
+		}
+	} else {
+		isHidden = file.Name()[0] == '.'
+	}
+
+	return isHidden
+}
+
 // DirList is a `DirListFunc` which renders directories and files in html, but plain, mode.
 // See `DirListRich` for more.
 func DirList(ctx *context.Context, dirOptions DirOptions, dirName string, dir http.File) error {
@@ -501,12 +559,33 @@ func DirList(ctx *context.Context, dirOptions DirOptions, dirName string, dir ht
 	sort.Slice(dirs, func(i, j int) bool { return dirs[i].Name() < dirs[j].Name() })
 
 	ctx.ContentType(context.ContentHTMLHeaderValue)
-	_, err = ctx.WriteString("<pre>\n")
+	_, err = ctx.WriteString("<div>\n")
+	if err != nil {
+		return err
+	}
+
+	// show current directory
+	_, err = ctx.Writef("<h2>Current Directory: %s</h2>", ctx.Request().RequestURI)
+	if err != nil {
+		return err
+	}
+
+	_, err = ctx.WriteString("<ul style=\"list-style: none; padding-left: 20px\">")
+	if err != nil {
+		return err
+	}
+
+	// link to parent directory
+	_, err = ctx.WriteString("<li><span style=\"width: 150px; float: left; display: inline-block;\">drwxrwxrwx</span><a href=\"./\">../</a><li>")
 	if err != nil {
 		return err
 	}
 
 	for _, d := range dirs {
+		if !dirOptions.ShowHidden && IsHidden(d) {
+			continue
+		}
+
 		name := toBaseName(d.Name())
 
 		upath := path.Join(ctx.Request().RequestURI, name)
@@ -525,12 +604,16 @@ func DirList(ctx *context.Context, dirOptions DirOptions, dirName string, dir ht
 		// name may contain '?' or '#', which must be escaped to remain
 		// part of the URL path, and not indicate the start of a query
 		// string or fragment.
-		_, err = ctx.Writef("<a href=\"%s\"%s>%s</a>\n", url.String(), downloadAttr, html.EscapeString(viewName))
+		_, err = ctx.Writef("<li>"+
+			"<span style=\"width: 150px; float: left; display: inline-block;\">%s</span>"+
+			"<a href=\"%s\"%s>%s</a>"+
+			"</li>",
+			d.Mode().String(), url.String(), downloadAttr, html.EscapeString(viewName))
 		if err != nil {
 			return err
 		}
 	}
-	_, err = ctx.WriteString("</pre>\n")
+	_, err = ctx.WriteString("</ul></div>\n")
 	return err
 }
 
@@ -578,6 +661,10 @@ func DirListRich(opts ...DirListRichOptions) DirListFunc {
 		}
 
 		for _, d := range dirs {
+			if !dirOptions.ShowHidden && IsHidden(d) {
+				continue
+			}
+
 			name := toBaseName(d.Name())
 
 			upath := path.Join(ctx.Request().RequestURI, name)
@@ -972,12 +1059,10 @@ func cacheFiles(ctx stdContext.Context, fs http.FileSystem, names []string, comp
 		// so, unless requested keep it as it's.
 		buf := new(bytes.Buffer)
 		for _, alg := range compressAlgs {
-			// stop all compressions if at least one file failed to.
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return ctx.Err() // stop all compressions if at least one file failed to.
 			default:
-				break
 			}
 
 			if alg == "brotli" {
@@ -1182,7 +1267,7 @@ var _ http.File = (*dir)(nil)
 
 // returns unorderded map of directories both reclusive and flat.
 func findDirs(fs http.FileSystem, names []string) (map[string]*dir, error) {
-	dirs := make(map[string]*dir, 0)
+	dirs := make(map[string]*dir)
 
 	for _, name := range names {
 		f, err := fs.Open(name)

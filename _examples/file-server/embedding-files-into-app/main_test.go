@@ -54,15 +54,15 @@ func (r resource) loadFromBase(dir string) string {
 	result := string(b)
 
 	if runtime.GOOS != "windows" {
-		result = strings.Replace(result, "\n", "\r\n", -1)
-		result = strings.Replace(result, "\r\r", "", -1)
+		result = strings.ReplaceAll(result, "\n", "\r\n")
+		result = strings.ReplaceAll(result, "\r\r", "")
 	}
 	return result
 }
 
 var urls = []resource{
-	"/static/css/bootstrap.min.css",
-	"/static/js/jquery-2.1.1.js",
+	"/static/css/main.css",
+	"/static/js/main.js",
 	"/static/favicon.ico",
 }
 
@@ -90,7 +90,7 @@ func TestEmbeddingFilesIntoApp(t *testing.T) {
 
 		e.GET(url).Expect().
 			Status(httptest.StatusOK).
-			ContentType(u.contentType(), app.ConfigurationReadOnly().GetCharset()).
+			ContentType(u.contentType()).
 			Body().Equal(contents)
 	}
 }

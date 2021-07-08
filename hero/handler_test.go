@@ -137,6 +137,16 @@ func TestPayloadBinding(t *testing.T) {
 		return input.Username
 	})
 
+	h.GetErrorHandler = func(iris.Context) ErrorHandler {
+		return ErrorHandlerFunc(func(ctx iris.Context, err error) {
+			if iris.IsErrPath(err) {
+				return // continue.
+			}
+
+			ctx.StopWithError(iris.StatusBadRequest, err)
+		})
+	}
+
 	app := iris.New()
 	app.Get("/", ptrHandler)
 	app.Post("/", ptrHandler)
@@ -152,6 +162,9 @@ func TestPayloadBinding(t *testing.T) {
 	e.POST("/").WithFormField("username", "makis").Expect().Status(httptest.StatusOK).Body().Equal("makis")
 	// FORM (multipart)
 	e.POST("/").WithMultipart().WithFormField("username", "makis").Expect().Status(httptest.StatusOK).Body().Equal("makis")
+	// FORM: test ErrorHandler skip the ErrPath.
+	e.POST("/").WithMultipart().WithFormField("username", "makis").WithFormField("unknown", "continue").
+		Expect().Status(httptest.StatusOK).Body().Equal("makis")
 
 	// POST URL query.
 	e.POST("/").WithQuery("username", "makis").Expect().Status(httptest.StatusOK).Body().Equal("makis")
@@ -191,12 +204,15 @@ type testMessage struct {
 	Body string
 }
 
+type myMap map[string]*testMessage
+
 func TestDependentDependencies(t *testing.T) {
 	b := New()
 	b.Register(&testServiceImpl{prefix: "prefix:"})
 	b.Register(func(service testService) testMessage {
 		return testMessage{Body: service.Say("it is a deep") + " dependency"}
 	})
+	b.Register(myMap{"test": &testMessage{Body: "value"}})
 	var (
 		h1 = b.Handler(func(msg testMessage) string {
 			return msg.Body
@@ -204,15 +220,20 @@ func TestDependentDependencies(t *testing.T) {
 		h2 = b.Handler(func(reuse testService) string {
 			return reuse.Say("message")
 		})
+		h3 = b.Handler(func(m myMap) string {
+			return m["test"].Body
+		})
 	)
 
 	app := iris.New()
 	app.Get("/h1", h1)
 	app.Get("/h2", h2)
+	app.Get("/h3", h3)
 
 	e := httptest.New(t, app)
 	e.GET("/h1").Expect().Status(httptest.StatusOK).Body().Equal("prefix: it is a deep dependency")
 	e.GET("/h2").Expect().Status(httptest.StatusOK).Body().Equal("prefix: message")
+	e.GET("/h3").Expect().Status(httptest.StatusOK).Body().Equal("value")
 }
 
 func TestHandlerPathParams(t *testing.T) {

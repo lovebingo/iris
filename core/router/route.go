@@ -19,6 +19,8 @@ import (
 // If any of the following fields are changed then the
 // caller should Refresh the router.
 type Route struct {
+	// The Party which this Route was created and registered on.
+	Party       Party
 	Title       string         `json:"title"`       // custom name to replace the method on debug logging.
 	Name        string         `json:"name"`        // "userRoute"
 	Description string         `json:"description"` // "lists a user"
@@ -86,7 +88,7 @@ type Route struct {
 // handlers and the macro container which all routes should share.
 // It parses the path based on the "macros",
 // handlers are being changed to validate the macros at serve time, if needed.
-func NewRoute(statusErrorCode int, method, subdomain, unparsedPath string,
+func NewRoute(p Party, statusErrorCode int, method, subdomain, unparsedPath string,
 	handlers context.Handlers, macros macro.Macros) (*Route, error) {
 	tmpl, err := macro.Parse(unparsedPath, macros)
 	if err != nil {
@@ -110,6 +112,7 @@ func NewRoute(statusErrorCode int, method, subdomain, unparsedPath string,
 	formattedPath := formatPath(path)
 
 	route := &Route{
+		Party:         p,
 		StatusCode:    statusErrorCode,
 		Name:          defaultName,
 		Method:        method,
@@ -136,6 +139,58 @@ func (r *Route) Use(handlers ...context.Handler) {
 		return
 	}
 	r.beginHandlers = append(r.beginHandlers, handlers...)
+}
+
+// UseOnce like Use but it replaces any duplicate handlers with
+// the new ones.
+// Should be called before Application Build.
+func (r *Route) UseOnce(handlers ...context.Handler) {
+	r.beginHandlers = context.UpsertHandlers(r.beginHandlers, handlers)
+}
+
+// RemoveHandler deletes a handler from begin, main and done handlers
+// based on its name or the handler pc function.
+// Returns the total amount of handlers removed.
+//
+// Should be called before Application Build.
+func (r *Route) RemoveHandler(namesOrHandlers ...interface{}) (count int) {
+	for _, nameOrHandler := range namesOrHandlers {
+		handlerName := ""
+		switch h := nameOrHandler.(type) {
+		case string:
+			handlerName = h
+		case context.Handler, func(*context.Context):
+			handlerName = context.HandlerName(h)
+		default:
+			panic(fmt.Sprintf("remove handler: unexpected type of %T", h))
+		}
+
+		r.beginHandlers = removeHandler(handlerName, r.beginHandlers, &count)
+		r.Handlers = removeHandler(handlerName, r.Handlers, &count)
+		r.doneHandlers = removeHandler(handlerName, r.doneHandlers, &count)
+	}
+
+	return
+}
+
+func removeHandler(handlerName string, handlers context.Handlers, counter *int) (newHandlers context.Handlers) {
+	for _, h := range handlers {
+		if h == nil {
+			continue
+		}
+
+		if context.HandlerName(h) == handlerName {
+			if counter != nil {
+				*counter++
+			}
+
+			continue
+		}
+
+		newHandlers = append(newHandlers, h)
+	}
+
+	return
 }
 
 // Done adds explicit finish handlers to this route.
@@ -239,6 +294,16 @@ func (r *Route) DeepEqual(other *Route) bool {
 	return r.Equal(other) && r.tmpl.Src == other.tmpl.Src
 }
 
+// SetName overrides the default route name which defaults to
+// method + subdomain + path and
+// statusErrorCode_method+subdomain+path for error routes.
+//
+// Note that the route name MUST BE unique per Iris Application.
+func (r *Route) SetName(newRouteName string) *Route {
+	r.Name = newRouteName
+	return r
+}
+
 // ExcludeSitemap excludes this route page from sitemap generator.
 // It sets the NoSitemap field to true.
 //
@@ -323,7 +388,7 @@ func formatPath(path string) string {
 		var formattedParts []string
 		parts := strings.Split(path, "/")
 		for _, part := range parts {
-			if len(part) == 0 {
+			if part == "" {
 				continue
 			}
 			if part[0] == startRune || part[0] == wildcardStartRune {
@@ -511,7 +576,7 @@ func (r *Route) Trace(w io.Writer, stoppedIndex int) {
 		if stoppedIndex != -1 && stoppedIndex <= len(r.Handlers) {
 			if i <= stoppedIndex {
 				pio.WriteRich(w, " ✓", pio.Green)
-			} else {
+				// } else {
 				// pio.WriteRich(w, " ✕", pio.Red, pio.Underline)
 			}
 		}
@@ -530,6 +595,8 @@ func (r *Route) Trace(w io.Writer, stoppedIndex int) {
 type routeReadOnlyWrapper struct {
 	*Route
 }
+
+var _ context.RouteReadOnly = routeReadOnlyWrapper{}
 
 func (rd routeReadOnlyWrapper) StatusErrorCode() int {
 	return rd.Route.StatusCode
@@ -565,6 +632,17 @@ func (rd routeReadOnlyWrapper) MainHandlerName() string {
 
 func (rd routeReadOnlyWrapper) MainHandlerIndex() int {
 	return rd.Route.MainHandlerIndex
+}
+
+func (rd routeReadOnlyWrapper) Property(key string) (interface{}, bool) {
+	properties := rd.Route.Party.Properties()
+	if properties != nil {
+		if property, ok := properties[key]; ok {
+			return property, true
+		}
+	}
+
+	return nil, false
 }
 
 func (rd routeReadOnlyWrapper) GetLastMod() time.Time {

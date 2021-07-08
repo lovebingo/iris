@@ -454,10 +454,9 @@ func (r Response) Dispatch(ctx *context.Context) {
 
 			ctx.SetLanguage(r.Lang)
 			r.Content = []byte(ctx.Tr(r.Text, r.Object))
-			return
+		} else {
+			r.Content = []byte(r.Text)
 		}
-
-		r.Content = []byte(r.Text)
 	}
 
 	err := dispatchCommon(ctx, r.Code, r.ContentType, r.Content, r.Object, defaultResultHandler, true)
@@ -480,28 +479,6 @@ type View struct {
 
 var _ Result = View{}
 
-const dotB = byte('.')
-
-// DefaultViewExt is the default extension if `view.Name `is missing,
-// but note that it doesn't care about
-// the app.RegisterView(iris.$VIEW_ENGINE("./$dir", "$ext"))'s $ext.
-// so if you don't use the ".html" as extension for your files
-// you have to append the extension manually into the `view.Name`
-// or change this global variable.
-var DefaultViewExt = ".html"
-
-func ensureExt(s string) string {
-	if len(s) == 0 {
-		return "index" + DefaultViewExt
-	}
-
-	if strings.IndexByte(s, dotB) < 1 {
-		s += DefaultViewExt
-	}
-
-	return s
-}
-
 // Dispatch writes the template filename, template layout and (any) data to the  client.
 // Completes the `Result` interface.
 func (r View) Dispatch(ctx *context.Context) { // r as Response view.
@@ -514,10 +491,7 @@ func (r View) Dispatch(ctx *context.Context) { // r as Response view.
 	}
 
 	if r.Name != "" {
-		r.Name = ensureExt(r.Name)
-
 		if r.Layout != "" {
-			r.Layout = ensureExt(r.Layout)
 			ctx.ViewLayout(r.Layout)
 		}
 

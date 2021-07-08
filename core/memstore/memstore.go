@@ -363,9 +363,6 @@ func (e Entry) UintDefault(def uint) (uint, error) {
 		if err != nil {
 			return def, err
 		}
-		if val > uint64(maxValue) {
-			return def, e.notFound(reflect.Uint)
-		}
 		return uint(val), nil
 	case uint:
 		return vv, nil
@@ -411,9 +408,6 @@ func (e Entry) Uint8Default(def uint8) (uint8, error) {
 		val, err := strconv.ParseUint(vv, 10, 8)
 		if err != nil {
 			return def, err
-		}
-		if val > math.MaxUint8 {
-			return def, e.notFound(reflect.Uint8)
 		}
 		return uint8(val), nil
 	case uint:
@@ -462,9 +456,6 @@ func (e Entry) Uint16Default(def uint16) (uint16, error) {
 		if err != nil {
 			return def, err
 		}
-		if val > math.MaxUint16 {
-			return def, e.notFound(reflect.Uint16)
-		}
 		return uint16(val), nil
 	case uint:
 		if vv > math.MaxUint16 {
@@ -509,9 +500,6 @@ func (e Entry) Uint32Default(def uint32) (uint32, error) {
 		if err != nil {
 			return def, err
 		}
-		if val > math.MaxUint32 {
-			return def, e.notFound(reflect.Uint32)
-		}
 		return uint32(val), nil
 	case uint:
 		if vv > math.MaxUint32 {
@@ -555,9 +543,6 @@ func (e Entry) Uint64Default(def uint64) (uint64, error) {
 		if err != nil {
 			return def, err
 		}
-		if val > math.MaxUint64 {
-			return def, e.notFound(reflect.Uint64)
-		}
 		return uint64(val), nil
 	case uint8:
 		return uint64(vv), nil
@@ -589,9 +574,6 @@ func (e Entry) Float32Default(key string, def float32) (float32, error) {
 		val, err := strconv.ParseFloat(vv, 32)
 		if err != nil {
 			return def, err
-		}
-		if val > math.MaxFloat32 {
-			return def, e.notFound(reflect.Float32)
 		}
 		return float32(val), nil
 	case float32:
@@ -814,6 +796,15 @@ func (r *Store) GetDefault(key string, def interface{}) interface{} {
 		return def
 	}
 	return vv
+}
+
+// Exists is a small helper which reports whether a key exists.
+// It's not recommended to be used outside of templates.
+// Use Get or GetEntry instead which will give you back the entry value too,
+// so you don't have to loop again the key-value storage to get its value.
+func (r *Store) Exists(key string) bool {
+	_, ok := r.GetEntry(key)
+	return ok
 }
 
 // Get returns the entry's value based on its key.

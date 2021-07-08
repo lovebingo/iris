@@ -8,10 +8,10 @@ import (
 	"sync"
 
 	"github.com/andybalholm/brotli"
+	"github.com/golang/snappy"
 	"github.com/klauspost/compress/flate"
 	"github.com/klauspost/compress/gzip"
 	"github.com/klauspost/compress/s2" // snappy output but likely faster decompression.
-	"github.com/klauspost/compress/snappy"
 )
 
 // The available builtin compression algorithms.
@@ -102,7 +102,7 @@ func NewCompressWriter(w io.Writer, encoding string, level int) (cw CompressWrit
 		}
 		cw = brotli.NewWriterLevel(w, level)
 	case SNAPPY:
-		cw = snappy.NewWriter(w)
+		cw = snappy.NewBufferedWriter(w)
 	case S2:
 		cw = s2.NewWriter(w)
 	default:

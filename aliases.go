@@ -14,6 +14,14 @@ import (
 	"github.com/kataras/iris/v12/view"
 )
 
+// SameSite attributes.
+const (
+	SameSiteDefaultMode = http.SameSiteDefaultMode
+	SameSiteLaxMode     = http.SameSiteLaxMode
+	SameSiteStrictMode  = http.SameSiteStrictMode
+	SameSiteNoneMode    = http.SameSiteNoneMode
+)
+
 type (
 	// Context is the middle-man server's "object" for the clients.
 	//
@@ -59,6 +67,12 @@ type (
 	Filter = context.Filter
 	// A Map is an alias of map[string]interface{}.
 	Map = context.Map
+	// User is a generic view of an authorized client.
+	// See `Context.User` and `SetUser` methods for more.
+	// An alias for the `context/User` type.
+	User = context.User
+	// SimpleUser is a simple implementation of the User interface.
+	SimpleUser = context.SimpleUser
 	// Problem Details for HTTP APIs.
 	// Pass a Problem value to `context.Problem` to
 	// write an "application/problem+json" response.
@@ -76,6 +90,14 @@ type (
 	//
 	// It is an alias of the `context#JSON` type.
 	JSON = context.JSON
+	// JSONReader holds the JSON decode options of the `Context.ReadJSON, ReadBody` methods.
+	//
+	// It is an alias of the `context#JSONReader` type.
+	JSONReader = context.JSONReader
+	// JSONP the optional settings for JSONP renderer.
+	//
+	// It is an alias of the `context#JSONP` type.
+	JSONP = context.JSONP
 	// ProtoMarshalOptions is a type alias for protojson.MarshalOptions.
 	ProtoMarshalOptions = context.ProtoMarshalOptions
 	// ProtoUnmarshalOptions is a type alias for protojson.UnmarshalOptions.
@@ -84,6 +106,11 @@ type (
 	//
 	// It is an alias of the `context#XML` type.
 	XML = context.XML
+	// Markdown the optional settings for Markdown renderer.
+	// See `Context.Markdown` for more.
+	//
+	// It is an alias of the `context#Markdown` type.
+	Markdown = context.Markdown
 	// Supervisor is a shortcut of the `host#Supervisor`.
 	// Used to add supervisor configurators on common Runners
 	// without the need of importing the `core/host` package.
@@ -147,6 +174,9 @@ type (
 	//
 	// An alias for the `context.CookieOption`.
 	CookieOption = context.CookieOption
+	// Cookie is a type alias for the standard net/http Cookie struct type.
+	// See `Context.SetCookie`.
+	Cookie = http.Cookie
 	// N is a struct which can be passed on the `Context.Negotiate` method.
 	// It contains fields which should be filled based on the `Context.Negotiation()`
 	// server side values. If no matched mime then its "Other" field will be sent,
@@ -155,6 +185,13 @@ type (
 	//
 	// An alias for the `context.N`.
 	N = context.N
+	// Locale describes the i18n locale.
+	// An alias for the `context.Locale`.
+	Locale = context.Locale
+	// ErrPrivate if provided then the error saved in context
+	// should NOT be visible to the client no matter what.
+	// An alias for the `context.ErrPrivate`.
+	ErrPrivate = context.ErrPrivate
 )
 
 // Constants for input argument at `router.RouteRegisterRule`.
@@ -219,8 +256,34 @@ var (
 	Ace = view.Ace
 )
 
+type (
+	// ErrViewNotExist reports whether a template was not found in the parsed templates tree.
+	ErrViewNotExist = context.ErrViewNotExist
+	// FallbackViewFunc is a function that can be registered
+	// to handle view fallbacks. It accepts the Context and
+	// a special error which contains information about the previous template error.
+	// It implements the FallbackViewProvider interface.
+	//
+	// See `Context.View` method.
+	FallbackViewFunc = context.FallbackViewFunc
+	// FallbackView is a helper to register a single template filename as a fallback
+	// when the provided tempate filename was not found.
+	FallbackView = context.FallbackView
+	// FallbackViewLayout is a helper to register a single template filename as a fallback
+	// layout when the provided layout filename was not found.
+	FallbackViewLayout = context.FallbackViewLayout
+)
+
 // PrefixDir returns a new FileSystem that opens files
 // by adding the given "prefix" to the directory tree of "fs".
+//
+// Useful when having templates and static files in the same
+// bindata AssetFile method. This way you can select
+// which one to serve as static files and what for templates.
+// All view engines have a `RootDir` method for that reason too
+// but alternatively, you can wrap the given file system with this `PrefixDir`.
+//
+// Example: https://github.com/kataras/iris/blob/master/_examples/file-server/single-page-application/embedded-single-page-application/main.go
 func PrefixDir(prefix string, fs http.FileSystem) http.FileSystem {
 	return &prefixedDir{prefix, fs}
 }
@@ -399,7 +462,7 @@ var (
 	// See https://tools.ietf.org/html/draft-ietf-httpbis-cookie-same-site-00 for details.
 	//
 	// A shortcut for the `context#CookieSameSite`.
-	CookieSameSite = context.CookieHTTPOnly
+	CookieSameSite = context.CookieSameSite
 	// CookieSecure sets the cookie's Secure option if the current request's
 	// connection is using TLS. See `CookieHTTPOnly` too.
 	//
@@ -433,8 +496,12 @@ var (
 	// A shortcut for the `context#CookieEncoding`.
 	CookieEncoding = context.CookieEncoding
 
+	// IsErrEmptyJSON reports whether the given "err" is caused by a
+	// Context.ReadJSON call when the request body
+	// didn't start with { or it was totally empty.
+	IsErrEmptyJSON = context.IsErrEmptyJSON
 	// IsErrPath can be used at `context#ReadForm` and `context#ReadQuery`.
-	// It reports whether the incoming error is type of `formbinder.ErrPath`,
+	// It reports whether the incoming error is type of `schema.ErrPath`,
 	// which can be ignored when server allows unknown post values to be sent by the client.
 	//
 	// A shortcut for the `context#IsErrPath`.
@@ -476,6 +543,9 @@ var (
 	//
 	// A shortcut for the `context#ErrPushNotSupported`.
 	ErrPushNotSupported = context.ErrPushNotSupported
+	// PrivateError accepts an error and returns a wrapped private one.
+	// A shortcut for the `context#PrivateError`.
+	PrivateError = context.PrivateError
 )
 
 // HTTP Methods copied from `net/http`.

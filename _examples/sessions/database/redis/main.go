@@ -6,16 +6,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kataras/iris/v12"
-
 	"github.com/kataras/iris/v12/sessions"
 	"github.com/kataras/iris/v12/sessions/sessiondb/redis"
 
 	"github.com/kataras/iris/v12/_examples/sessions/overview/example"
 )
 
-// tested with redis version 3.0.503.
-// for windows see: https://github.com/ServiceStack/redis-windows
+// 1. Install Redis:
+// 1.1 Windows: https://github.com/ServiceStack/redis-windows
+// 1.2 Other: https://redis.io/download
+// 2. Run command: go run -mod=mod main.go
+//
+// Tested with redis version 3.0.503.
 func main() {
 	// These are the default values,
 	// you can replace them based on your running redis' server settings:
@@ -24,24 +26,18 @@ func main() {
 		Addr:      getenv("REDIS_ADDR", "127.0.0.1:6379"),
 		Timeout:   time.Duration(30) * time.Second,
 		MaxActive: 10,
+		Username:  "",
 		Password:  "",
 		Database:  "",
-		Prefix:    "",
-		Delim:     "-",
-		Driver:    redis.Redigo(), // redis.Radix() can be used instead.
+		Prefix:    "myapp-",
+		Driver:    redis.GoRedis(), // defaults.
 	})
 
 	// Optionally configure the underline driver:
-	// driver := redis.Redigo()
-	// driver.MaxIdle = ...
-	// driver.IdleTimeout = ...
-	// driver.Wait = ...
-	// redis.Config {Driver: driver}
-
-	// Close connection when control+C/cmd+C
-	iris.RegisterOnInterrupt(func() {
-		db.Close()
-	})
+	// driver := redis.GoRedis()
+	// driver.ClientOptions = redis.Options{...}
+	// driver.ClusterOptions = redis.ClusterOptions{...}
+	// redis.New(redis.Config{Driver: driver, ...})
 
 	defer db.Close() // close the database connection if application errored.
 

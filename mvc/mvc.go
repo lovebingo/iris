@@ -33,6 +33,13 @@ type Application struct {
 	Router               router.Party
 	Controllers          []*ControllerActivator
 	websocketControllers []websocket.ConnHandler
+
+	// Disables verbose logging for controllers under this and its children mvc apps.
+	// Defaults to false.
+	controllersNoLog bool
+
+	// Set custom path
+	customPathWordFunc CustomPathWordFunc
 }
 
 func newApp(subRouter router.Party, container *hero.Container) *Application {
@@ -112,6 +119,25 @@ func (app *Application) Configure(configurators ...func(*Application)) *Applicat
 // It returns this Application.
 func (app *Application) SetName(appName string) *Application {
 	app.Name = appName
+	return app
+}
+
+// SetCustomPathWordFunc sets a custom function
+// which is responsible to override the existing controllers method parsing.
+func (app *Application) SetCustomPathWordFunc(wordFunc CustomPathWordFunc) *Application {
+	app.customPathWordFunc = wordFunc
+	return app
+}
+
+// SetControllersNoLog disables verbose logging for next registered controllers
+// under this App and its children of `Application.Party` or `Application.Clone`.
+//
+// To disable logging for routes under a Party,
+// see `Party.SetRoutesNoLog` instead.
+//
+// Defaults to false when log level is "debug".
+func (app *Application) SetControllersNoLog(disable bool) *Application {
+	app.controllersNoLog = disable
 	return app
 }
 
@@ -217,7 +243,13 @@ func (opt OptionFunc) Apply(c *ControllerActivator) {
 //
 // Examples at: https://github.com/kataras/iris/tree/master/_examples/mvc
 func (app *Application) Handle(controller interface{}, options ...Option) *Application {
-	app.handle(controller, options...)
+	c := app.handle(controller, options...)
+	// Note: log on register-time, so they can catch any failures before build.
+	if !app.controllersNoLog {
+		// log only http (and versioned) or grpc controllers,
+		// websocket is already logging itself.
+		logController(app.Router.Logger(), c)
+	}
 	return app
 }
 
@@ -249,7 +281,7 @@ var _ websocket.ConnHandler = (*Application)(nil)
 // It returns a collection of namespace and events that
 // were registered through `HandleWebsocket` controllers.
 func (app *Application) GetNamespaces() websocket.Namespaces {
-	if logger := app.Router.Logger(); logger.Level == golog.DebugLevel {
+	if logger := app.Router.Logger(); logger.Level == golog.DebugLevel && !app.controllersNoLog {
 		websocket.EnableDebug(logger)
 	}
 
@@ -284,10 +316,6 @@ func (app *Application) handle(controller interface{}, options ...Option) *Contr
 	}
 
 	app.Controllers = append(app.Controllers, c)
-
-	// Note: log on register-time, so they can catch any failures before build.
-	logController(app.Router.Logger(), c)
-
 	return c
 }
 
@@ -308,6 +336,7 @@ func (app *Application) HandleError(handler func(ctx *context.Context, err error
 // Example: `.Clone(app.Party("/path")).Handle(new(TodoSubController))`.
 func (app *Application) Clone(party router.Party) *Application {
 	cloned := newApp(party, app.container.Clone())
+	cloned.controllersNoLog = app.controllersNoLog
 	return cloned
 }
 
@@ -322,12 +351,32 @@ func (app *Application) Party(relativePath string, middleware ...context.Handler
 
 var childNameReplacer = strings.NewReplacer("*", "", "(", "", ")", "")
 
+func getArrowSymbol(static bool, field bool) string {
+	if field {
+		if static {
+			return "╺"
+		}
+		return "⦿"
+
+	}
+
+	if static {
+		return "•"
+	}
+
+	return "⦿"
+}
+
 // TODO: instead of this I want to get in touch with tools like "graphviz"
 // so we can put all that information (and the API) inside web graphs,
 // it will be easier for developers to see the flow of the whole application,
 // but probalby I will never find time for that as we have higher priorities...just a reminder though.
 func logController(logger *golog.Logger, c *ControllerActivator) {
 	if logger.Level != golog.DebugLevel {
+		return
+	}
+
+	if c.injector == nil { // when no actual controller methods are registered.
 		return
 	}
 
@@ -346,10 +395,13 @@ func logController(logger *golog.Logger, c *ControllerActivator) {
 	logger.TimeFormat = ""
 
 	printer := logger.Printer
-
 	reports := c.injector.Container.Reports
 	ctrlName := c.RelName()
-	logger.Debugf("%s\n", ctrlName)
+	ctrlScopeType := ""
+	if !c.injector.Singleton {
+		ctrlScopeType = getArrowSymbol(false, false) + " "
+	}
+	logger.Debugf("%s%s\n", ctrlScopeType, ctrlName)
 
 	longestNameLen := 0
 	for _, report := range reports {
@@ -443,7 +495,9 @@ func logController(logger *golog.Logger, c *ControllerActivator) {
 				if spaceRequired < 0 {
 					spaceRequired = 0
 				}
-				fmt.Fprintf(printer, "  ╺ %s%s %s\n", fieldName, strings.Repeat(" ", spaceRequired), fileLine)
+
+				arrowSymbol := getArrowSymbol(entry.Static, true)
+				fmt.Fprintf(printer, "  %s %s%s %s\n", arrowSymbol, fieldName, strings.Repeat(" ", spaceRequired), fileLine)
 			}
 		}
 	}

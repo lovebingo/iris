@@ -19,8 +19,9 @@ import (
 	"github.com/kataras/iris/v12/core/netutil"
 	"github.com/kataras/iris/v12/core/router"
 	"github.com/kataras/iris/v12/i18n"
-	requestLogger "github.com/kataras/iris/v12/middleware/logger"
+	"github.com/kataras/iris/v12/middleware/accesslog"
 	"github.com/kataras/iris/v12/middleware/recover"
+	"github.com/kataras/iris/v12/middleware/requestid"
 	"github.com/kataras/iris/v12/view"
 
 	"github.com/kataras/golog"
@@ -35,8 +36,8 @@ import (
 	"github.com/tdewolff/minify/v2/xml"
 )
 
-// Version is the current version number of the Iris Web Framework.
-const Version = "12.2.0"
+// Version is the current version of the Iris Web Framework.
+const Version = "12.2.0-alpha"
 
 // Byte unit helpers.
 const (
@@ -128,14 +129,42 @@ func New() *Application {
 	return app
 }
 
-// Default returns a new Application instance which on build state registers
-// html view engine on "./views" and load locales from "./locales/*/*".
-// The return instance recovers on panics and logs the incoming http requests too.
+// Default returns a new Application.
+// Default with "debug" Logger Level.
+// Localization enabled on "./locales" directory
+// and HTML templates on "./views" or "./templates" directory.
+// It runs with the AccessLog on "./access.log",
+// Recovery and Request ID middleware already attached.
 func Default() *Application {
 	app := New()
+	// Set default log level.
+	app.logger.SetLevel("debug")
+	app.logger.Debugf(`Log level set to "debug"`)
+
+	// Register the accesslog middleware.
+	logFile, err := os.OpenFile("./access.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err == nil {
+		// Close the file on shutdown.
+		app.ConfigureHost(func(su *Supervisor) {
+			su.RegisterOnShutdown(func() {
+				logFile.Close()
+			})
+		})
+
+		ac := accesslog.New(logFile)
+		ac.AddOutput(app.logger.Printer)
+		app.UseRouter(ac.Handler)
+		app.logger.Debugf("Using <%s> to log requests", logFile.Name())
+	}
+
+	// Register the requestid middleware
+	// before recover so current Context.GetID() contains the info on panic logs.
+	app.UseRouter(requestid.New())
+	app.logger.Debugf("Using <UUID4> to identify requests")
+
+	// Register the recovery, after accesslog and recover,
+	// before end-developer's middleware.
 	app.UseRouter(recover.New())
-	app.UseRouter(requestLogger.New())
-	app.UseRouter(Compression)
 
 	app.defaultMode = true
 
@@ -276,6 +305,14 @@ func (app *Application) Logger() *golog.Logger {
 	return app.logger
 }
 
+// IsDebug reports whether the application is running
+// under debug/development mode.
+// It's just a shortcut of Logger().Level >= golog.DebugLevel.
+// The same method existss as Context.IsDebug() too.
+func (app *Application) IsDebug() bool {
+	return app.logger.Level >= golog.DebugLevel
+}
+
 // I18nReadOnly returns the i18n's read-only features.
 // See `I18n` method for more.
 func (app *Application) I18nReadOnly() context.I18nReadOnly {
@@ -350,8 +387,9 @@ func (app *Application) Minifier() *minify.M {
 	return app.minifier
 }
 
-// RegisterView should be used to register view engines mapping to a root directory
-// and the template file(s) extension.
+// RegisterView registers a view engine for the application.
+// Children can register their own too. If no Party view Engine is registered
+// then this one will be used to render the templates instead.
 func (app *Application) RegisterView(viewEngine view.Engine) {
 	app.view.Register(viewEngine)
 }
@@ -366,17 +404,13 @@ func (app *Application) RegisterView(viewEngine view.Engine) {
 // Use context.View to render templates to the client instead.
 // Returns an error on failure, otherwise nil.
 func (app *Application) View(writer io.Writer, filename string, layout string, bindingData interface{}) error {
-	if app.view.Len() == 0 {
+	if !app.view.Registered() {
 		err := errors.New("view engine is missing, use `RegisterView`")
 		app.logger.Error(err)
 		return err
 	}
 
-	err := app.view.ExecuteWriter(writer, filename, layout, bindingData)
-	if err != nil {
-		app.logger.Error(err)
-	}
-	return err
+	return app.view.ExecuteWriter(writer, filename, layout, bindingData)
 }
 
 // ConfigureHost accepts one or more `host#Configuration`, these configurators functions
@@ -536,7 +570,7 @@ func (app *Application) Build() error {
 	if app.defaultMode { // the app.I18n and app.View will be not available until Build.
 		if !app.I18n.Loaded() {
 			for _, s := range []string{"./locales/*/*", "./locales/*", "./translations"} {
-				if _, err := os.Stat(s); os.IsNotExist(err) {
+				if _, err := os.Stat(s); err != nil {
 					continue
 				}
 
@@ -549,9 +583,9 @@ func (app *Application) Build() error {
 			}
 		}
 
-		if app.view.Len() == 0 {
+		if !app.view.Registered() {
 			for _, s := range []string{"./views", "./templates", "./web/views"} {
-				if _, err := os.Stat(s); os.IsNotExist(err) {
+				if _, err := os.Stat(s); err != nil {
 					continue
 				}
 
@@ -567,13 +601,8 @@ func (app *Application) Build() error {
 		app.Router.PrependRouterWrapper(app.I18n.Wrapper())
 	}
 
-	if n := app.view.Len(); n > 0 {
-		tr := "engines"
-		if n == 1 {
-			tr = tr[0 : len(tr)-1]
-		}
-
-		app.logger.Debugf("Application: %d registered view %s", n, tr)
+	if app.view.Registered() {
+		app.logger.Debugf("Application: view engine %q is registered", app.view.Name())
 		// view engine
 		// here is where we declare the closed-relative framework functions.
 		// Each engine has their defaults, i.e yield,render,render_r,partial, params...
@@ -588,7 +617,7 @@ func (app *Application) Build() error {
 
 	if !app.Router.Downgraded() {
 		// router
-		if _, err := injectLiveReload(app.ContextPool, app.Router); err != nil {
+		if _, err := injectLiveReload(app); err != nil {
 			app.logger.Errorf("LiveReload: init: failed: %v", err)
 			return err
 		}
@@ -864,6 +893,7 @@ func (app *Application) Run(serve Runner, withOrWithout ...Configurator) error {
 
 	app.ConfigureHost(func(host *Supervisor) {
 		host.SocketSharding = app.config.SocketSharding
+		host.KeepAlive = app.config.KeepAlive
 	})
 
 	app.tryStartTunneling()

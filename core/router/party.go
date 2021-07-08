@@ -1,8 +1,6 @@
 package router
 
 import (
-	"net/http"
-
 	"github.com/kataras/iris/v12/context"
 	"github.com/kataras/iris/v12/macro"
 
@@ -29,6 +27,85 @@ type Party interface {
 	//
 	// It returns the same `APIBuilder` featured with Dependency Injection.
 	ConfigureContainer(builder ...func(*APIContainer)) *APIContainer
+	// RegisterDependency calls the `ConfigureContainer.RegisterDependency` method
+	// with the provided value(s). See `HandleFunc` and `PartyConfigure` methods too.
+	RegisterDependency(dependencies ...interface{})
+	// HandleFunc registers a route on HTTP verb "method" and relative, to this Party, path.
+	// It is like the `Handle` method but it accepts one or more "handlersFn" functions
+	// that each one of them can accept any input arguments as the HTTP request and
+	// output a result as the HTTP response. Specifically,
+	// the input of the "handlersFn" can be any registered dependency
+	// (see ConfigureContainer().RegisterDependency)
+	// or leave the framework to parse the request and fill the values accordingly.
+	// The output of the "handlersFn" can be any output result:
+	//  custom structs <T>, string, []byte, int, error,
+	//  a combination of the above, hero.Result(hero.View | hero.Response) and more.
+	//
+	// If more than one handler function is registered
+	// then the execution happens without the nessecity of the `Context.Next` method,
+	// simply, to stop the execution and not continue to the next "handlersFn" in chain
+	// you should return an `iris.ErrStopExecution`.
+	//
+	// Example Code:
+	//
+	// The client's request body and server's response body Go types.
+	// Could be any data structure.
+	//
+	// 	type (
+	// 		request struct {
+	// 			Firstname string `json:"firstname"`
+	// 			Lastname string `json:"lastname"`
+	// 		}
+	//
+	// 		response struct {
+	// 			ID uint64 `json:"id"`
+	// 			Message string `json:"message"`
+	// 		}
+	// 	)
+	//
+	// Register the route hander.
+	//
+	//              HTTP VERB    ROUTE PATH       ROUTE HANDLER
+	//  app.HandleFunc("PUT", "/users/{id:uint64}", updateUser)
+	//
+	// Code the route handler function.
+	// Path parameters and request body are binded
+	// automatically.
+	// The "id" uint64 binds to "{id:uint64}" route path parameter and
+	// the "input" binds to client request data such as JSON.
+	//
+	// 	func updateUser(id uint64, input request) response {
+	// 		// [custom logic...]
+	//
+	// 		return response{
+	// 			ID:id,
+	// 			Message: "User updated successfully",
+	// 		}
+	// 	}
+	//
+	// Simulate a client request which sends data
+	// to the server and prints out the response.
+	//
+	// 	curl --request PUT -d '{"firstname":"John","lastname":"Doe"}' \
+	// 	-H "Content-Type: application/json" \
+	// 	http://localhost:8080/users/42
+	//
+	// 	{
+	// 		"id": 42,
+	// 		"message": "User updated successfully"
+	// 	}
+	//
+	// See the `ConfigureContainer` for more features regrading
+	// the dependency injection, mvc and function handlers.
+	//
+	// This method is just a shortcut for the `ConfigureContainer().Handle` one.
+	HandleFunc(method, relativePath string, handlersFn ...interface{}) *Route
+	// UseFunc registers a function which can accept one or more
+	// dependencies (see RegisterDependency) and returns an iris.Handler
+	// or a result of <T> and/or an error.
+	//
+	// This method is just a shortcut of the `ConfigureContainer().Use`.
+	UseFunc(handlersFn ...interface{})
 
 	// GetRelPath returns the current party's relative path.
 	// i.e:
@@ -40,6 +117,19 @@ type Party interface {
 	//
 	// Learn more at:  https://github.com/kataras/iris/tree/master/_examples/routing/dynamic-path
 	Macros() *macro.Macros
+
+	// Properties returns the original Party's properties map,
+	// it can be modified before server startup but not afterwards.
+	Properties() context.Map
+
+	// SetRoutesNoLog disables (true) the verbose logging for the next registered
+	// routes under this Party and its children.
+	//
+	// To disable logging for controllers under MVC Application,
+	// see `mvc/Application.SetControllersNoLog` instead.
+	//
+	// Defaults to false when log level is "debug".
+	SetRoutesNoLog(disable bool) Party
 
 	// OnErrorCode registers a handlers chain for this `Party` for a specific HTTP status code.
 	// Read more at: http://www.iana.org/assignments/http-status-codes/http-status-codes.xhtml
@@ -76,6 +166,32 @@ type Party interface {
 	//
 	// Look `Party` for more.
 	PartyFunc(relativePath string, partyBuilderFunc func(p Party)) Party
+	// PartyConfigure like `Party` and `PartyFunc` registers a new children Party
+	// but instead it accepts a struct value which should implement the PartyConfigurator interface.
+	//
+	// PartyConfigure accepts the relative path of the child party
+	// (As an exception, if it's empty then all configurators are applied to the current Party)
+	// and one or more Party configurators and
+	// executes the PartyConfigurator's Configure method.
+	//
+	// If the end-developer registered one or more dependencies upfront through
+	// RegisterDependencies or ConfigureContainer.RegisterDependency methods
+	// and "p" is a pointer to a struct then try to bind the unset/zero exported fields
+	// to the registered dependencies, just like we do with Controllers.
+	// Useful when the api's dependencies amount are too much to pass on a function.
+	//
+	// Usage:
+	//  app.PartyConfigure("/users", &api.UsersAPI{UserRepository: ..., ...})
+	// Where UsersAPI looks like:
+	//  type UsersAPI struct { [...] }
+	//  func(api *UsersAPI) Configure(router iris.Party) {
+	//   router.Get("/{id:uuid}", api.getUser)
+	//   [...]
+	//  }
+	// Usage with (static) dependencies:
+	//  app.RegisterDependency(userRepo, ...)
+	//  app.PartyConfigure("/users", &api.UsersAPI{})
+	PartyConfigure(relativePath string, partyReg ...PartyConfigurator) Party
 	// Subdomain returns a new party which is responsible to register routes to
 	// this specific "subdomain".
 	//
@@ -114,7 +230,16 @@ type Party interface {
 	// Done appends to the very end, Handler(s) to the current Party's routes and child routes.
 	// The difference from .Use is that this/or these Handler(s) are being always running last.
 	Done(handlers ...context.Handler)
-
+	// RemoveHandler deletes a handler from begin and done handlers
+	// based on its name or the handler pc function.
+	//
+	// As an exception, if one of the arguments is a pointer to an int,
+	// then this is used to set the total amount of removed handlers.
+	//
+	// Returns the Party itself for chain calls.
+	//
+	// Should be called before children routes regitration.
+	RemoveHandler(namesOrHandlers ...interface{}) Party
 	// Reset removes all the begin and done handlers that may derived from the parent party via `Use` & `Done`,
 	// and the execution rules.
 	// Note that the `Reset` will not reset the handlers that are registered via `UseGlobal` & `DoneGlobal`.
@@ -201,8 +326,13 @@ type Party interface {
 	//
 	// Returns all the registered routes, including GET index and path patterm and HEAD.
 	//
-	// Examples can be found at: https://github.com/kataras/iris/tree/master/_examples/file-server
-	HandleDir(requestPath string, fs http.FileSystem, opts ...DirOptions) []*Route
+	// Usage:
+	// HandleDir("/public", "./assets", DirOptions{...}) or
+	// HandleDir("/public", iris.Dir("./assets"), DirOptions{...})
+	//
+	// Examples:
+	// https://github.com/kataras/iris/tree/master/_examples/file-server
+	HandleDir(requestPath string, fileSystem interface{}, opts ...DirOptions) []*Route
 
 	// None registers an "offline" route
 	// see context.ExecRoute(routeName) and
@@ -264,6 +394,15 @@ type Party interface {
 	// This method can be used for third-parties Iris helpers packages and tools
 	// that want a more detailed view of Party-based Routes before take the decision to register them.
 	CreateRoutes(methods []string, relativePath string, handlers ...context.Handler) []*Route
+	// RemoveRoute deletes a registered route by its name before `Application.Listen`.
+	// The default naming for newly created routes is: method + subdomain + path.
+	// Reports whether a route with that name was found and removed successfully.
+	//
+	// Note that this method applies to all Parties (sub routers)
+	// even if each of the Parties have access to this method,
+	// as the route name is unique per Iris Application.
+	RemoveRoute(routeName string) bool
+
 	// StaticContent registers a GET and HEAD method routes to the requestPath
 	// that are ready to serve raw static bytes, memory cached.
 	//
@@ -282,11 +421,23 @@ type Party interface {
 	// Returns the GET *Route.
 	Favicon(favPath string, requestPath ...string) *Route
 
-	// RegisterView registers and loads a view engine middleware for that group of routes.
-	// It overrides any of the application's root registered view engines.
+	// RegisterView registers and loads a view engine middleware for this group of routes.
+	// It overrides any of the application's root registered view engine.
 	// To register a view engine per handler chain see the `Context.ViewEngine` instead.
 	// Read `Configuration.ViewEngineContextKey` documentation for more.
 	RegisterView(viewEngine context.ViewEngine)
+	// FallbackView registers one or more fallback views for a template or a template layout.
+	// Usage:
+	//  FallbackView(iris.FallbackView("fallback.html"))
+	//  FallbackView(iris.FallbackViewLayout("layouts/fallback.html"))
+	//  OR
+	//  FallbackView(iris.FallbackViewFunc(ctx iris.Context, err iris.ErrViewNotExist) error {
+	//    err.Name is the previous template name.
+	//    err.IsLayout reports whether the failure came from the layout template.
+	//    err.Data is the template data provided to the previous View call.
+	//    [...custom logic e.g. ctx.View("fallback", err.Data)]
+	//  })
+	FallbackView(provider context.FallbackViewProvider)
 	// Layout overrides the parent template layout with a more specific layout for this Party.
 	// It returns the current Party.
 	//
